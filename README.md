@@ -1,117 +1,102 @@
 # FoodShare
 
-A real-time surplus food rescue platform. Donors (restaurants, shops, kitchens) post food
-that's about to go to waste; nearby receivers (shelters, NGOs, neighbors) get notified
-instantly, claim it before it expires, and pick it up. Built on the MERN stack with
-Socket.io for live updates and MongoDB geospatial queries for proximity matching.
+A real-time surplus food rescue platform. Donors — restaurants, kitchens, shops,
+households — post food that would otherwise go to waste. Nearby receivers — shelters,
+NGOs, neighbors — get notified instantly, claim it before it expires, and pick it up.
+Built on the MERN stack with Socket.io for live updates and MongoDB geospatial queries
+for proximity matching.
 
-## Stack
+**Live app:** _add your Vercel URL here_
+**API:** _add your Render URL here_
 
-- **Frontend**: React (Vite), Tailwind CSS, React Router, Zustand, TanStack Query, Axios,
-  Socket.io client, Leaflet for maps
-- **Backend**: Node, Express, MongoDB/Mongoose, JWT auth, Socket.io, node-cron, Cloudinary
-  (photo uploads)
+## Features
 
-## Project layout
+- Role-based accounts — donor, receiver, admin
+- Geospatial matching via MongoDB `2dsphere` / `$near` — no external geocoding needed
+- Real-time updates over Socket.io — new listings, claims, and expirations push instantly
+- Race-safe claiming — an atomic `findOneAndUpdate` guarantees a listing can never be
+  double-claimed
+- Countdown-driven expiry with a server-side cron job to auto-expire stale listings
+- Two-way trust ratings after each confirmed pickup, rolled up via aggregation
+- Optional photo uploads (Cloudinary) and an interactive Leaflet map
 
+## Tech stack
+
+**Frontend:** React (Vite), Tailwind, React Router, Zustand, TanStack Query, Axios,
+Socket.io client, Leaflet
+**Backend:** Node, Express, MongoDB/Mongoose, JWT, Socket.io, node-cron, Cloudinary
+
+## How the interesting parts work
+
+**Race-safe claiming** — one atomic operation resolves simultaneous claim attempts:
+```js
+FoodListing.findOneAndUpdate(
+  { _id: req.params.id, status: 'available' },
+  { status: 'claimed', claimedBy: req.user._id },
+  { new: true }
+);
 ```
-foodshare/
-  backend/     Express API, MongoDB models, sockets, cron job
-  frontend/    Vite + React client
+If two requests hit at once, only one can still match `available` — the loser gets a
+clean 409 instead of corrupting state.
+
+**Proximity matching** — a native geospatial query, no third-party geocoding service:
+```js
+FoodListing.find({
+  location: { $near: { $geometry: { type: 'Point', coordinates: [lng, lat] }, $maxDistance: radiusKm * 1000 } },
+});
 ```
 
-## 1. Prerequisites
+**Real-time delivery** — clients join a coarse geographic "grid cell" room by
+coordinates; new listings broadcast to that cell and its neighbors, so nearby receivers
+see updates within seconds without polling.
 
-- Node.js 18+
-- A MongoDB database — the free tier at https://www.mongodb.com/cloud/atlas is enough
-- (Optional) A free Cloudinary account at https://cloudinary.com if you want photo uploads
-  to work. Without it, listings can still be created, just without a photo.
+## Running it locally
 
-## 2. Backend setup
-
+**Backend**
 ```bash
 cd backend
-cp .env.example .env
-# open .env and fill in MONGO_URI, JWT_SECRET, and (optionally) Cloudinary keys
+cp .env.example .env   # fill in MONGO_URI and JWT_SECRET
 npm install
-npm run seed   # optional: creates demo donors, receivers, and listings
-npm run dev    # starts on http://localhost:5000
+npm run seed             # optional demo data, password123 for all seeded users
+npm run dev               # http://localhost:5000
 ```
 
-`npm run seed` creates two demo donors and two demo receivers, all with the password
-`password123`, plus a few sample listings, so you can log in and see the board populated
-right away. Check `backend/utils/seed.js` for the exact accounts.
-
-## 3. Frontend setup
-
+**Frontend**
 ```bash
 cd frontend
 npm install
-npm run dev    # starts on http://localhost:5173
+npm run dev   # http://localhost:5173
 ```
 
-The Vite dev server proxies `/api` requests to `http://localhost:5000`, so as long as the
-backend is running, no extra configuration is needed for local development. If you deploy
-the backend elsewhere, set `VITE_SOCKET_URL` in a `frontend/.env` file to that backend's
-URL so the Socket.io client connects to the right place.
+The dev server proxies `/api` to `localhost:5000` automatically — no extra config needed
+locally.
 
-## 4. Using the app
+### Environment variables
 
-1. Register as a **donor** (a restaurant/kitchen/shop) or a **receiver** (a shelter/NGO/
-   individual). Allow location access when prompted — this drives all the proximity
-   matching. If you skip it, a default location (Delhi) is used so the app stays usable.
-2. As a donor, post surplus food with a quantity, category, and a rescue window (how many
-   hours until it must be picked up).
-3. As a receiver, browse the manifest (the board of listings), filter by category or
-   radius, and claim anything available. The claim is atomic on the server, so if two
-   receivers tap claim on the same listing at the same moment, only one succeeds.
-4. Once the food is handed over, either party confirms the pickup, which unlocks a
-   1–5 star rating for the other side. Ratings roll up into a running average shown on
-   profiles.
-5. Listings that pass their expiry time without being claimed are automatically marked
-   expired by a server-side cron job that runs every minute.
+| Variable | Where | Required |
+|---|---|---|
+| `MONGO_URI` | backend | yes |
+| `JWT_SECRET` | backend | yes |
+| `CLIENT_URL` | backend | yes in production |
+| `VITE_SOCKET_URL` | frontend | yes in production |
+| `CLOUDINARY_*` | backend | only for photo uploads |
 
-## 5. Pushing to GitHub
+## Deployment
 
-```bash
-cd foodshare
-git init
-git add .
-git commit -m "Initial commit: FoodShare MERN app"
-git branch -M main
-git remote add origin https://github.com/<your-username>/<your-repo>.git
-git push -u origin main
-```
+- **Frontend** → Vercel. Root dir `frontend`, build `npm run build`, output `dist`. Set
+  `VITE_SOCKET_URL` to your backend URL.
+- **Backend** → Render. Root dir `backend`, build `npm install`, start `npm start`. Set
+  `CLIENT_URL` to your frontend URL.
+- **Database** → MongoDB Atlas, images → Cloudinary free tier.
 
-Both `backend/.gitignore` and `frontend/.gitignore` already exclude `node_modules` and
-`.env`, so secrets won't be committed.
+## API overview
 
-## 6. Deployment
+`POST /api/auth/register|login` · `GET/PATCH /api/auth/me` · `GET/POST /api/listings` ·
+`GET /api/listings/:id` · `POST /api/listings/:id/claim` · `GET /api/claims/mine` ·
+`PATCH /api/claims/:id/confirm|cancel` · `POST /api/ratings`
 
-- **Frontend** → Vercel or Netlify. Point the build command at `npm run build` inside
-  `frontend/`, output directory `dist`. Set an environment variable `VITE_SOCKET_URL`
-  pointing at your deployed backend's URL (no trailing slash).
-- **Backend** → Render or Railway. Point it at `backend/`, start command `npm start`.
-  Set the same environment variables from `.env.example` in the host's dashboard,
-  including `CLIENT_URL` set to your deployed frontend's URL (needed for CORS and
-  Socket.io).
-- **Database** → MongoDB Atlas. Whitelist `0.0.0.0/0` in Atlas's network access settings
-  if your host uses dynamic IPs, or add the host's static IP if it has one.
-- **Images** → Cloudinary free tier, credentials go in the backend's environment
-  variables.
+All routes except register/login require a `Bearer` JWT in the `Authorization` header.
 
-## Notable implementation details worth knowing about
+## License
 
-- **Race-safe claiming**: `claimController.js` uses a single atomic
-  `findOneAndUpdate({ status: 'available' }, { status: 'claimed', ... })` call, so the
-  database itself resolves the race between two simultaneous claim attempts — whichever
-  request's filter still matches `available` wins, and the loser gets a clean 409 response.
-- **Proximity matching**: both listings and users store a GeoJSON `Point` with a
-  `2dsphere` index, and browsing uses MongoDB's native `$near` operator with a
-  `$maxDistance` in meters, so "nearby" needs no external geocoding service.
-- **Real-time delivery**: Socket.io clients join a coarse geographic "grid cell" room
-  based on their coordinates. When a listing is posted, the server broadcasts to the
-  poster's cell and its eight neighbors, so nearby receivers see it appear on their board
-  without refreshing.
-- **Auto-expiry**: a `node-cron` job runs every minute, flips any `available` listing past
-  its `expiresAt` to `expired`, and notifies the donor over the socket connection.
+MIT
